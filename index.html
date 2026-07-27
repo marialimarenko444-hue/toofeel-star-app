@@ -80,6 +80,8 @@
   .pay .st{font-size:12px;text-align:right;flex:none}
   .st.ok{color:var(--sage)} .st.no{color:var(--amber)} .st.tr{color:var(--gold)}
   .st .price{display:block;color:var(--muted);font-size:11px;margin-top:1px}
+  .del{width:28px;height:28px;border-radius:50%;flex:none;border:none;background:transparent;color:var(--faint);font-size:14px;cursor:pointer;margin-left:4px}
+  .del:active{color:var(--rose);background:rgba(222,158,142,.12)}
 
   .exp{display:flex;align-items:center;gap:12px;padding:11px 4px;border-bottom:1px solid var(--line)}
   .exp:last-child{border-bottom:none}
@@ -143,6 +145,17 @@
   input[type=date].tin{color:var(--text)}
   input[type=date].tin::-webkit-calendar-picker-indicator{filter:invert(.8) sepia(.4) saturate(4) hue-rotate(2deg)}
   .save{width:100%;border:none;border-radius:14px;padding:16px;font-size:16px;font-weight:600;color:#231C10;background:linear-gradient(180deg,var(--gold),var(--gold2));margin-top:6px;cursor:pointer}
+  .delbtn{width:100%;border:1px solid rgba(222,158,142,.45);background:transparent;color:var(--rose);border-radius:14px;padding:14px;font-size:15px;margin-top:10px;cursor:pointer;font-family:var(--sans)}
+  .delbtn:active{background:rgba(222,158,142,.1)}
+  .hintline{font-size:11.5px;color:var(--faint);margin:8px 4px 0;text-align:center}
+  .cfm{position:fixed;inset:0;z-index:70;display:none;align-items:center;justify-content:center;background:rgba(8,6,10,.66);padding:24px}
+  .cfm.on{display:flex}
+  .cfm-box{background:var(--bg2);border:1px solid var(--line2);border-radius:20px;padding:22px;max-width:340px;width:100%;box-shadow:0 20px 50px rgba(0,0,0,.55)}
+  .cfm-msg{font-size:15px;line-height:1.5;margin-bottom:18px;text-align:center;color:var(--text)}
+  .cfm-row{display:flex;gap:10px}
+  .cfm-no{flex:1;border:1px solid var(--line2);background:transparent;color:var(--text);border-radius:12px;padding:13px;font-size:15px;cursor:pointer;font-family:var(--sans)}
+  .cfm-yes{flex:1;border:none;background:linear-gradient(180deg,var(--rose),#c98476);color:#2a1712;border-radius:12px;padding:13px;font-size:15px;font-weight:600;cursor:pointer;font-family:var(--sans)}
+  .cfm-no:active,.cfm-yes:active{transform:translateY(1px)}
   .empty-sheet{color:var(--muted);text-align:center;padding:24px 0;font-size:14px}
 
   .toast{position:fixed;left:50%;bottom:120px;transform:translate(-50%,20px);z-index:60;background:var(--card2);border:1px solid var(--line2);color:var(--text);padding:12px 18px;border-radius:30px;font-size:13.5px;opacity:0;transition:.25s;pointer-events:none;box-shadow:0 10px 30px rgba(0,0,0,.5)}
@@ -160,6 +173,17 @@
 <div id="app"></div>
 <div class="toast" id="toast"></div>
 <div class="ov" id="ov" onclick="closeSheet()"></div>
+
+<!-- своё окно подтверждения (системное confirm не работает в Telegram) -->
+<div class="cfm" id="cfm">
+  <div class="cfm-box">
+    <div class="cfm-msg" id="cfmMsg"></div>
+    <div class="cfm-row">
+      <button class="cfm-no" onclick="cfmClose()">Отмена</button>
+      <button class="cfm-yes" onclick="cfmYes()">Удалить</button>
+    </div>
+  </div>
+</div>
 
 <!-- лист: расход -->
 <div class="sheet" id="sheetExp">
@@ -182,7 +206,7 @@
 <!-- лист: новый ученик -->
 <div class="sheet" id="sheetStu">
   <div class="grip"></div>
-  <h3>Новый ученик</h3>
+  <h3 id="stuTitle">Новый ученик</h3>
   <div class="field"><label>Имя</label><input class="tin" id="stuName" placeholder="Например: София Р."></div>
   <div class="field"><label>Направление</label><div class="cats" id="stuDirs"></div></div>
   <div class="field"><label>Тип оплаты</label><div class="cats" id="stuModes"></div></div>
@@ -193,7 +217,8 @@
   <div class="field" id="stuDateWrap" style="display:none"><label>Дата оплаты</label><input class="tin" type="date" id="stuPayDate"></div>
   <div class="field togglerow"><span>Новенькая</span><div class="tgl on" id="stuNew" onclick="tgl('stuNew')"></div></div>
   <div class="field"><label>Пометка (по желанию)</label><input class="tin" id="stuNote" placeholder="скидка, семья, «2 часа»…"></div>
-  <button class="save" onclick="addStudent()">Добавить ученика</button>
+  <button class="save" id="stuSave" onclick="saveStu()">Добавить ученика</button>
+  <button class="delbtn" id="stuDelBtn" style="display:none" onclick="delStudentFromSheet()">Удалить ученика</button>
 </div>
 
 <script>
@@ -220,7 +245,7 @@ var EMBEDDED_DATA = {
 
 /* ---------- state + сохранение на устройстве ---------- */
 var DATA=null, S=[], EXP=[];
-var STORE='toofeel_uchet_v2';
+var STORE='toofeel_uchet_v3';
 var fmt=function(n){ return new Intl.NumberFormat('ru-RU').format(Math.round(n)); };
 var $=function(id){ return document.getElementById(id); };
 function clone(x){ return Object.assign({},x); }
@@ -312,24 +337,25 @@ function render(){
     '</div>';
   }).join('');
 
-  var paysHtml=S.map(function(st){
+  var paysHtml=S.length? S.map(function(st){
     var d=dirById(st.dirId); if(!d) return '';
     var dot=st.mode==='trial'?'tr':(st.paid?'ok':'no');
     var stc=st.mode==='trial'?'tr':(st.paid?'ok':'no');
     var status=st.mode==='trial'?'пробное':(st.paid?'оплачено '+(st.payDate?fmtDate(st.payDate):''):'не оплачено');
-    return '<div class="pay" onclick="togglePay(\''+st.id+'\')">'+
+    return '<div class="pay" onclick="openStuEdit(\''+st.id+'\')">'+
       '<span class="dot '+dot+'"></span>'+
       '<div class="nm"><div class="n">'+st.name+(st.isNew?' <span style="color:var(--gold);font-size:11px">· новенькая</span>':'')+'</div>'+
       '<div class="g">'+d.name+(d.sub?' · '+d.sub:'')+(st.note?' · <span class="disc">'+st.note+'</span>':'')+'</div></div>'+
       '<div class="st '+stc+'">'+status+'<span class="price">'+priceLabel(st)+'</span></div>'+
     '</div>';
-  }).join('');
+  }).join('') : '<div class="empty-sheet" style="padding:22px 0">Пока пусто. Нажми <b style="color:var(--gold)">+ ученик</b>, чтобы добавить первого.</div>';
 
-  var expHtml=EXP.map(function(e){
+  var expHtml=EXP.length? EXP.map(function(e){
     return '<div class="exp"><div class="d">'+e.date+'</div>'+
       '<div class="body"><div class="t">'+e.title+'</div><span class="chip">'+e.category+'</span></div>'+
-      '<div class="a">−'+fmt(e.amount)+'</div></div>';
-  }).join('');
+      '<div class="a">−'+fmt(e.amount)+'</div>'+
+      '<button class="del" title="Удалить расход" onclick="delExpense(\''+e.id+'\')">✕</button></div>';
+  }).join('') : '<div class="empty-sheet" style="padding:18px 0">Расходов пока нет.</div>';
 
   var dirSum=byDirection();
   var maxDir=Math.max.apply(null, dirSum.map(function(x){return Math.max(x.income,1);}));
@@ -368,7 +394,8 @@ function render(){
 
     '<div class="sec"><div class="sec-h"><h2>Оплаты</h2><div class="right"><span class="meta">'+paidCount+' из '+billable+'</span>'+
       '<button class="addbtn" onclick="openStu()">+ ученик</button></div></div>'+
-      '<div class="card" style="padding:4px 15px">'+paysHtml+'</div></div>'+
+      '<div class="card" style="padding:4px 15px">'+paysHtml+'</div>'+
+      (S.length?'<div class="hintline">Нажми на ученика, чтобы изменить или удалить</div>':'')+'</div>'+
 
     '<div class="sec"><div class="sec-h"><h2>Расходы</h2><span class="meta">'+cm.label.split(' ')[0]+'</span></div>'+
       '<div class="card" style="padding:4px 15px">'+expHtml+
@@ -386,9 +413,29 @@ function render(){
         '<div class="subttl">Прибыль по месяцам</div>'+
         '<div class="mlist">'+monthsHtml+'</div>'+
       '</div>'+
-      '<button class="reset" onclick="if(confirm(\'Вернуть данные к примеру? Твои записи удалятся.\'))resetState()">↺ сбросить к примеру</button>'+
+      '<button class="reset" onclick="askConfirm(\'Очистить все записи? Ученики, оплаты и расходы удалятся.\', resetState)">↺ очистить все записи</button>'+
     '</div>'+
   '</div>';
+}
+
+/* ---------- своё подтверждение ---------- */
+var cfmCb=null;
+function askConfirm(msg,cb){ cfmCb=cb; $('cfmMsg').textContent=msg; $('cfm').classList.add('on'); }
+function cfmClose(){ $('cfm').classList.remove('on'); cfmCb=null; }
+function cfmYes(){ var cb=cfmCb; cfmClose(); if(cb) cb(); }
+
+/* ---------- удаление ---------- */
+function delStudent(id){
+  var st=S.find(function(x){return x.id===id;}); if(!st)return;
+  askConfirm('Удалить ученика «'+st.name+'»?', function(){
+    S=S.filter(function(x){return x.id!==id;}); render(); toast('Ученик удалён');
+  });
+}
+function delExpense(id){
+  var e=EXP.find(function(x){return x.id===id;}); if(!e)return;
+  askConfirm('Удалить расход «'+e.title+'» на '+fmt(e.amount)+' ₽?', function(){
+    EXP=EXP.filter(function(x){return x.id!==id;}); render(); toast('Расход удалён');
+  });
 }
 
 /* ---------- оплата ---------- */
@@ -437,25 +484,52 @@ function addExpense(){
 }
 
 /* ---------- новый ученик ---------- */
-var dirSel=null, modeSel='month';
+var dirSel=null, modeSel='month', editId=null;
 var MODES=[{v:'trial',l:'Пробное · бесплатно'},{v:'once',l:'Разовое'},{v:'month',l:'За месяц'}];
 function tgl(id){ $(id).classList.toggle('on'); }
 function toggleDate(){ $('stuDateWrap').style.display=$('stuPaid').classList.contains('on')?'block':'none'; }
-function openStu(preDir){
-  dirSel=preDir||DATA.directions[0].id;
-  var d=dirById(dirSel);
-  modeSel = (dirSel==='d2') ? 'once' : 'month';   // индивидуальные — по умолчанию разово
-  $('stuName').value=''; $('stuPrice').value=''; $('stuNote').value='';
-  $('stuPaid').classList.remove('on'); $('stuNew').classList.add('on');
-  $('stuPayDate').value=todayISO(); $('stuDateWrap').style.display='none';
+
+function renderDirChips(){
   $('stuDirs').innerHTML=DATA.directions.map(function(x){
     var lab=x.name.replace('Базовый курс','Базовый')+(isBase(x)?' · '+x.sub:'');
     return '<div class="cat'+(x.id===dirSel?' sel':'')+'" onclick="pickDir(this,\''+x.id+'\')">'+lab+'</div>';
   }).join('');
-  renderModes(); refreshMode();
+}
+
+/* добавление нового */
+function openStu(preDir){
+  editId=null;
+  $('stuTitle').textContent='Новый ученик';
+  $('stuSave').textContent='Добавить ученика';
+  $('stuDelBtn').style.display='none';
+  dirSel=preDir||DATA.directions[0].id;
+  modeSel = (dirSel==='d2') ? 'once' : 'month';
+  $('stuName').value=''; $('stuPrice').value=''; $('stuNote').value='';
+  $('stuPaid').classList.remove('on'); $('stuNew').classList.add('on');
+  $('stuPayDate').value=todayISO();
+  renderDirChips(); renderModes(); refreshMode();
   openSheet('sheetStu');
   setTimeout(function(){ $('stuName').focus(); },300);
 }
+
+/* редактирование существующего (по тапу на ученика) */
+function openStuEdit(id){
+  var st=S.find(function(x){return x.id===id;}); if(!st)return;
+  editId=id;
+  $('stuTitle').textContent='Изменить';
+  $('stuSave').textContent='Сохранить';
+  $('stuDelBtn').style.display='block';
+  dirSel=st.dirId; modeSel=st.mode;
+  $('stuName').value=st.name;
+  $('stuPrice').value=st.price?st.price:'';
+  $('stuNote').value=st.note||'';
+  $('stuPaid').classList.toggle('on', !!st.paid);
+  $('stuNew').classList.toggle('on', !!st.isNew);
+  $('stuPayDate').value=st.payDate||todayISO();
+  renderDirChips(); renderModes(); refreshMode();
+  openSheet('sheetStu');
+}
+
 function renderModes(){
   $('stuModes').innerHTML=MODES.map(function(m){ return '<div class="cat'+(m.v===modeSel?' sel':'')+'" onclick="pickMode(this,\''+m.v+'\')">'+m.l+'</div>'; }).join('');
 }
@@ -486,7 +560,7 @@ function refreshMode(){
     $('stuPrice').placeholder=ph; $('stuHint').textContent=hint;
   }
 }
-function addStudent(){
+function saveStu(){
   var name=$('stuName').value.trim();
   if(!name){ toast('Впиши имя'); return; }
   var price=0, paid=false, payDate=null;
@@ -496,10 +570,27 @@ function addStudent(){
     paid=$('stuPaid').classList.contains('on');
     payDate=paid?($('stuPayDate').value||todayISO()):null;
   }
-  S.push({ id:'s'+Date.now(), name:name, dirId:dirSel, mode:modeSel, price:price,
-           paid:paid, isNew:$('stuNew').classList.contains('on'),
-           note:$('stuNote').value.trim(), payDate:payDate });
-  closeSheet(); render(); toast(name+' — добавлена ✦');
+  var obj={ name:name, dirId:dirSel, mode:modeSel, price:price,
+            paid:paid, isNew:$('stuNew').classList.contains('on'),
+            note:$('stuNote').value.trim(), payDate:payDate };
+  if(editId){
+    var st=S.find(function(x){return x.id===editId;});
+    if(st) Object.assign(st, obj);
+    closeSheet(); render(); toast(name+' — изменения сохранены');
+  } else {
+    obj.id='s'+Date.now(); S.push(obj);
+    closeSheet(); render(); toast(name+' — добавлена ✦');
+  }
+}
+function delStudentFromSheet(){
+  if(!editId) return;
+  var st=S.find(function(x){return x.id===editId;});
+  if(!st) return;
+  var id=editId;
+  askConfirm('Удалить ученика «'+st.name+'»?', function(){
+    S=S.filter(function(x){return x.id!==id;});
+    closeSheet(); render(); toast('Ученик удалён');
+  });
 }
 
 /* ---------- sheet/toast/fallback ---------- */
